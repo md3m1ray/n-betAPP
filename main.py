@@ -8,6 +8,8 @@ import sqlite3
 from openpyxl.styles import Font, PatternFill
 import numpy as np
 import logging
+import random
+from collections import defaultdict
 
 # Loglama ayarları
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -242,11 +244,8 @@ def denge_nobet_cizelgesi(nobet_cizelgesi, personel_listesi, haftasonu_conn):
     return nobet_cizelgesi
 
 
-import random
-from collections import defaultdict
-
-
-def nöbet_çizelgesi_oluştur(personel_listesi, izinli_listesi, tarih_araligi, max_nobet_sayisi, min_gun_araligi):
+def nöbet_çizelgesi_oluştur(personel_listesi, izinli_listesi, tarih_araligi, max_nobet_sayisi, min_gun_araligi,
+                            haftasonu_conn):
     def uygun_mu(nobet_çizelgesi, personel, gün):
         # Son nöbet günü kontrolü
         son_nobet_gunu = son_nöbet_günleri[personel["isim"]]
@@ -260,7 +259,8 @@ def nöbet_çizelgesi_oluştur(personel_listesi, izinli_listesi, tarih_araligi, 
             return False
 
         # Hafta sonu kontrolü
-        if datetime.strptime(gün, '%Y-%m-%d').weekday() >= 5 and hafta_sonu_nobet_sayisi[personel["isim"]] >= 1:
+        hafta_sonu_gunu = datetime.strptime(gün, '%Y-%m-%d').weekday() >= 5
+        if hafta_sonu_gunu and not personel["haftasonu_nobeti"]:
             return False
 
         return True
@@ -273,7 +273,7 @@ def nöbet_çizelgesi_oluştur(personel_listesi, izinli_listesi, tarih_araligi, 
 
         # Nöbet sayıları adil mi?
         for personel, sayi in nöbet_sayilari.items():
-            if sayi > max_nobet_sayisi:
+            if sayi < max_nobet_sayisi:
                 return False
 
         return True
@@ -329,9 +329,28 @@ def nöbet_çizelgesi_oluştur(personel_listesi, izinli_listesi, tarih_araligi, 
                         if datetime.strptime(gün, '%Y-%m-%d').weekday() >= 5:
                             hafta_sonu_nobet_sayisi[personel["isim"]] += 1
 
+        # Eğer nöbetçi atanamayan günler varsa, hafta sonu durumu olmayan personel atanabilir
+        for gün in tarih_araligi:
+            if len(nöbet_çizelgesi[gün]) < 2:
+                for grup, grup_uyeleri in gruplar.items():
+                    for personel in grup_uyeleri:
+                        if personel["haftasonu_nobeti"] == False and uygun_mu(nöbet_çizelgesi, personel, gün):
+                            nöbet_çizelgesi[gün].append(personel)
+                            nöbet_sayilari[personel["isim"]] += 1
+                            son_nöbet_günleri[personel["isim"]] = gün
+                            if datetime.strptime(gün, '%Y-%m-%d').weekday() >= 5:
+                                hafta_sonu_nobet_sayisi[personel["isim"]] += 1
+                        if len(nöbet_çizelgesi[gün]) >= 2:
+                            break
+
         # Çizelgeyi kontrol et
         if çizelgeyi_kontrol_et(nöbet_çizelgesi):
             logging.debug(f"{deneme}. deneme: Başarılı!")
+            # Başarılı olunduğunda nöbet geçmişini güncelle
+            for personel in personel_listesi:
+                if nöbet_sayilari[personel["isim"]] > 0:  # Sadece nöbet yazılanları güncelle
+                    update_nobet_gecmisi(haftasonu_conn, personel["isim"],
+                                         hafta_sonu_nobet_sayisi[personel["isim"]] > 0)
             break
         else:
             logging.debug(f"{deneme}. deneme: Kurallara uyulmadı, tekrar deneniyor...")
@@ -340,7 +359,8 @@ def nöbet_çizelgesi_oluştur(personel_listesi, izinli_listesi, tarih_araligi, 
 
 
 
-def excel_yaz(nobet_çizelgesi, dosya_adi, personel_listesi, toplam_nobet_sayisi, hafta_sonu_nobet_sayisi):
+def excel_yaz(nobet_çizelgesi, dosya_adi, personel_listesi, toplam_nobet_sayisi, hafta_sonu_nobet_sayisi,
+              haftasonu_conn):
     try:
         with pd.ExcelWriter(dosya_adi, engine='openpyxl') as writer:
             if nobet_çizelgesi:  # Nöbetler boş değilse
@@ -349,7 +369,13 @@ def excel_yaz(nobet_çizelgesi, dosya_adi, personel_listesi, toplam_nobet_sayisi
                     while len(nobet_çizelgesi[gün]) < 2:
                         nobet_çizelgesi[gün].append(None)
 
-                df = pd.DataFrame.from_dict(nobet_çizelgesi, orient='index', columns=["Nöbetçi 1", "Nöbetçi 2"])
+                # Sadece isimleri almak için güncelleme yapılıyor
+                df = pd.DataFrame.from_dict(
+                    {gün: [nobetci.get('isim') if nobetci else None for nobetci in nobet_çizelgesi[gün]]
+                     for gün in nobet_çizelgesi},
+                    orient='index', columns=["Nöbetçi 1", "Nöbetçi 2"]
+                )
+
                 df.index.name = 'Tarih'
                 df.reset_index(inplace=True)
 
@@ -365,6 +391,7 @@ def excel_yaz(nobet_çizelgesi, dosya_adi, personel_listesi, toplam_nobet_sayisi
 
                 # Hafta sonu günlerini kırmızı renkle işaretleme
                 red_fill = PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid")
+                yellow_fill = PatternFill(start_color="FFFFFF00", end_color="FFFFFF00", fill_type="solid")
 
                 for row in range(2, len(df) + 2):  # 2, çünkü Excel'de başlık satırı 1. satır
                     gün_hücre = sheet.cell(row=row, column=4)  # 'Gün' sütunu Excel'de 4. sütun
@@ -373,14 +400,25 @@ def excel_yaz(nobet_çizelgesi, dosya_adi, personel_listesi, toplam_nobet_sayisi
                         for col in range(1, 5):  # Tarih, Nöbetçi 1, Nöbetçi 2 ve Gün sütunlarını renklendirme
                             sheet.cell(row=row, column=col).fill = red_fill
 
-                # Toplam Nöbet ve Hafta Sonu Nöbet Sayıları için
+                    # Nöbetçilerin sarı renkle işaretlenmesi
+                    for col in range(2, 4):  # Nöbetçi 1 ve Nöbetçi 2 sütunları
+                        personel_hücre = sheet.cell(row=row, column=col)
+                        if personel_hücre.value:
+                            nöbet_sayisi = sum(df['Nöbetçi 1'].eq(personel_hücre.value)) + sum(
+                                df['Nöbetçi 2'].eq(personel_hücre.value))
+                            if nöbet_sayisi == 2:
+                                personel_hücre.fill = yellow_fill
+
+                # Personel Listesi ve Nöbet Geçmişi Sayfası
                 personel_data = []
                 for personel in personel_listesi:
-                    isim = personel["isim"]
-                    toplam_nobet = toplam_nobet_sayisi.get(isim, 0)
-                    hafta_sonu_nobet = hafta_sonu_nobet_sayisi.get(isim, 0)
+                    toplam_nobet, hafta_sonu_nobet = get_nobet_gecmisi(haftasonu_conn, personel["isim"])
+                    toplam_nobet += toplam_nobet_sayisi.get(personel["isim"], 0)  # Güncel toplam nöbet sayısını ekle
+                    hafta_sonu_nobet += hafta_sonu_nobet_sayisi.get(personel["isim"],
+                                                                    0)  # Güncel hafta sonu nöbet sayısını ekle
+
                     personel_data.append({
-                        "İsim": isim,
+                        "İsim": personel["isim"],
                         "Grup": personel["grup"],
                         "Toplam Nöbet": toplam_nobet,
                         "Hafta Sonu Nöbet": hafta_sonu_nobet
@@ -698,6 +736,9 @@ class NobetApp(tk.Tk):
 
         min_gun_araligi = self.min_gun_araligi_var.get()
 
+        # Haftasonu nöbet geçmişi veritabanı bağlantısı
+        haftasonu_conn = create_database('nobet_app2.db')
+
         logging.debug("nöbet_çizelgesi_oluştur fonksiyonu çağrılacak")
         # Nöbet Çizelgesini Oluştur
         tarih_araligi = tarih_araligi_olustur(baslangic_tarihi, len(self.personel_listesi))
@@ -706,14 +747,15 @@ class NobetApp(tk.Tk):
             self.izinli_listesi,
             tarih_araligi,
             max_nobet_sayisi,
-            min_gun_araligi
+            min_gun_araligi,
+            haftasonu_conn
         )
 
         logging.debug("nöbet_çizelgesi_oluştur fonksiyonu çağrıldı")
 
         # Sonucu Dosyaya Yaz
         excel_yaz(nobet_cizelgesi, 'nobet_cizelgesi.xlsx', self.personel_listesi, toplam_nobet_sayisi,
-                  hafta_sonu_nobet_sayisi)
+                  hafta_sonu_nobet_sayisi, haftasonu_conn)  # haftasonu_conn parametresini ekleyin
         messagebox.showinfo("Başarılı", "Nöbet çizelgesi oluşturuldu ve 'nobet_cizelgesi.xlsx' dosyasına kaydedildi.")
 
 
