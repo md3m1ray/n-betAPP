@@ -263,6 +263,10 @@ def nöbet_çizelgesi_oluştur(personel_listesi, izinli_listesi, tarih_araligi, 
         if hafta_sonu_gunu and not personel["haftasonu_nobeti"]:
             return False
 
+        # İzin kontrolü
+        if izinli_mi(personel, gün):
+            return False
+
         return True
 
     def çizelgeyi_kontrol_et(nobet_çizelgesi):
