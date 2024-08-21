@@ -245,10 +245,10 @@ def denge_nobet_cizelgesi(nobet_cizelgesi, personel_listesi, haftasonu_conn):
 
 
 def nöbet_çizelgesi_oluştur(personel_listesi, izinli_listesi, tarih_araligi, max_nobet_sayisi, min_gun_araligi,
-                            haftasonu_conn):
-    def uygun_mu(nobet_çizelgesi, personel, gün):
+                            haftasonu_conn, max_deneme=500):
+    def uygun_mu(nobet_cizelgesi, personel, gün):
         # Son nöbet günü kontrolü
-        son_nobet_gunu = son_nöbet_günleri[personel["isim"]]
+        son_nobet_gunu = son_nöbet_günleri.get(personel["isim"])
         if son_nobet_gunu is not None:
             gun_farki = (datetime.strptime(gün, '%Y-%m-%d') - datetime.strptime(son_nobet_gunu, '%Y-%m-%d')).days
             if gun_farki < min_gun_araligi:
@@ -259,9 +259,10 @@ def nöbet_çizelgesi_oluştur(personel_listesi, izinli_listesi, tarih_araligi, 
             return False
 
         # Hafta sonu kontrolü
-        hafta_sonu_gunu = datetime.strptime(gün, '%Y-%m-%d').weekday() >= 5
-        if hafta_sonu_gunu and not personel["haftasonu_nobeti"]:
-            return False
+        if datetime.strptime(gün, '%Y-%m-%d').weekday() >= 5 and hafta_sonu_nobet_sayisi[personel["isim"]] >= 1:
+            hafta_sonu_gunu = datetime.strptime(gün, '%Y-%m-%d').weekday() >= 5
+            if hafta_sonu_gunu and not personel["haftasonu_nobeti"]:
+                return False
 
         # İzin kontrolü
         if izinli_mi(personel, gün):
@@ -269,9 +270,9 @@ def nöbet_çizelgesi_oluştur(personel_listesi, izinli_listesi, tarih_araligi, 
 
         return True
 
-    def çizelgeyi_kontrol_et(nobet_çizelgesi):
+    def çizelgeyi_kontrol_et(nobet_cizelgesi):
         # Boş gün var mı?
-        for nobetçiler in nöbet_çizelgesi.values():
+        for nobetçiler in nobet_cizelgesi.values():
             if len(nobetçiler) < 2:
                 return False
 
@@ -283,41 +284,48 @@ def nöbet_çizelgesi_oluştur(personel_listesi, izinli_listesi, tarih_araligi, 
         return True
 
     # Başlangıç değerleri
-    nöbet_çizelgesi = defaultdict(list)
+    nobet_cizelgesi = defaultdict(list)
     nöbet_sayilari = defaultdict(int)
     son_nöbet_günleri = defaultdict(lambda: None)
     hafta_sonu_nobet_sayisi = defaultdict(int)
 
     deneme = 0
-    while True:
+    while deneme < max_deneme:
         deneme += 1
         logging.debug(f"{deneme}. deneme: Nöbet çizelgesi oluşturuluyor...")
 
         # Yeni bir çizelge oluştur
-        nöbet_çizelgesi.clear()
+        nobet_cizelgesi.clear()
         nöbet_sayilari.clear()
         son_nöbet_günleri.clear()
         hafta_sonu_nobet_sayisi.clear()
 
-        # Grupları sıraya göre yerleştir
+        # Grupları rastgele sıraya koyun
         gruplar = defaultdict(list)
         for personel in personel_listesi:
             gruplar[personel["grup"]].append(personel)
 
+        grup_numaralari = list(gruplar.keys())
+        random.shuffle(grup_numaralari)
+
+        # Her grup içindeki üyeleri karıştırın
+        for grup in grup_numaralari:
+            random.shuffle(gruplar[grup])
+
+        # Kalan diğer personelleri yerleştirelim
         for gün in tarih_araligi:
             uygun_personeller = []
-            for grup, grup_uyeleri in gruplar.items():
-                random.shuffle(grup_uyeleri)
-                uygun_personeller.extend([p for p in grup_uyeleri if uygun_mu(nöbet_çizelgesi, p, gün)])
+            for grup in grup_numaralari:
+                uygun_personeller.extend([p for p in gruplar[grup] if uygun_mu(nobet_cizelgesi, p, gün)])
 
             random.shuffle(uygun_personeller)
 
             # Önce aynı gruptan olanları atamaya çalış
             for personel in uygun_personeller:
-                if len(nöbet_çizelgesi[gün]) < 2:
-                    grup_uyesi = any(p["grup"] == personel["grup"] for p in nöbet_çizelgesi[gün])
-                    if grup_uyesi or not nöbet_çizelgesi[gün]:
-                        nöbet_çizelgesi[gün].append(personel)
+                if len(nobet_cizelgesi[gün]) < 2:
+                    grup_uyesi = any(p["grup"] == personel["grup"] for p in nobet_cizelgesi[gün])
+                    if grup_uyesi or not nobet_cizelgesi[gün]:
+                        nobet_cizelgesi[gün].append(personel)
                         nöbet_sayilari[personel["isim"]] += 1
                         son_nöbet_günleri[personel["isim"]] = gün
                         if datetime.strptime(gün, '%Y-%m-%d').weekday() >= 5:
@@ -325,9 +333,9 @@ def nöbet_çizelgesi_oluştur(personel_listesi, izinli_listesi, tarih_araligi, 
 
             # Eğer aynı gruptan uygun kimse kalmadıysa diğer gruplardan alınabilir
             for personel in uygun_personeller:
-                if len(nöbet_çizelgesi[gün]) < 2:
-                    if not any(p["grup"] == personel["grup"] for p in nöbet_çizelgesi[gün]):
-                        nöbet_çizelgesi[gün].append(personel)
+                if len(nobet_cizelgesi[gün]) < 2:
+                    if not any(p["grup"] == personel["grup"] for p in nobet_cizelgesi[gün]):
+                        nobet_cizelgesi[gün].append(personel)
                         nöbet_sayilari[personel["isim"]] += 1
                         son_nöbet_günleri[personel["isim"]] = gün
                         if datetime.strptime(gün, '%Y-%m-%d').weekday() >= 5:
@@ -335,20 +343,20 @@ def nöbet_çizelgesi_oluştur(personel_listesi, izinli_listesi, tarih_araligi, 
 
         # Eğer nöbetçi atanamayan günler varsa, hafta sonu durumu olmayan personel atanabilir
         for gün in tarih_araligi:
-            if len(nöbet_çizelgesi[gün]) < 2:
-                for grup, grup_uyeleri in gruplar.items():
-                    for personel in grup_uyeleri:
-                        if personel["haftasonu_nobeti"] == False and uygun_mu(nöbet_çizelgesi, personel, gün):
-                            nöbet_çizelgesi[gün].append(personel)
+            if len(nobet_cizelgesi[gün]) < 2:
+                for grup in grup_numaralari:
+                    for personel in gruplar[grup]:
+                        if personel["haftasonu_nobeti"] == False and uygun_mu(nobet_cizelgesi, personel, gün):
+                            nobet_cizelgesi[gün].append(personel)
                             nöbet_sayilari[personel["isim"]] += 1
                             son_nöbet_günleri[personel["isim"]] = gün
                             if datetime.strptime(gün, '%Y-%m-%d').weekday() >= 5:
                                 hafta_sonu_nobet_sayisi[personel["isim"]] += 1
-                        if len(nöbet_çizelgesi[gün]) >= 2:
+                        if len(nobet_cizelgesi[gün]) >= 2:
                             break
 
         # Çizelgeyi kontrol et
-        if çizelgeyi_kontrol_et(nöbet_çizelgesi):
+        if çizelgeyi_kontrol_et(nobet_cizelgesi):
             logging.debug(f"{deneme}. deneme: Başarılı!")
             # Başarılı olunduğunda nöbet geçmişini güncelle
             for personel in personel_listesi:
@@ -359,7 +367,13 @@ def nöbet_çizelgesi_oluştur(personel_listesi, izinli_listesi, tarih_araligi, 
         else:
             logging.debug(f"{deneme}. deneme: Kurallara uyulmadı, tekrar deneniyor...")
 
-    return nöbet_çizelgesi, nöbet_sayilari, hafta_sonu_nobet_sayisi
+    # Eğer deneme sayısı sınırını aşarsa, bir uyarı ver
+    if deneme >= max_deneme:
+        messagebox.showwarning("Uyarı",
+                               "İzinli Personel fazla olduğu için tam nöbet çizelgesi oluşturulamadı. "
+                               "Manuel ekleme gerekebilir")
+
+    return nobet_cizelgesi, nöbet_sayilari, hafta_sonu_nobet_sayisi
 
 
 
@@ -547,7 +561,7 @@ class NobetApp(tk.Tk):
         self.min_gun_araligi_label = tk.Label(self.nobet_frame, text="Nöbetler Arası Minimum Gün Sayısı:")
         self.min_gun_araligi_label.grid(row=9, column=0, padx=5, pady=5, sticky="w")
 
-        self.min_gun_araligi_var = tk.IntVar(value=10)  # Varsayılan değer 10 gün
+        self.min_gun_araligi_var = tk.IntVar(value=5)  # Varsayılan değer 5 gün
         self.min_gun_araligi_spinbox = tk.Spinbox(self.nobet_frame, from_=1, to=30,
                                                   textvariable=self.min_gun_araligi_var, width=3)
         self.min_gun_araligi_spinbox.grid(row=9, column=1, padx=5, pady=5, sticky="w")
